@@ -53,6 +53,7 @@ import docking.widgets.label.GDLabel;
 import docking.widgets.table.TableSortState;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressRange;
+import ghidra.program.model.correlate.Hash;
 import ghidra.program.model.data.AbstractIntegerDataType;
 import ghidra.program.model.data.Array;
 import ghidra.program.model.data.CategoryPath;
@@ -1059,9 +1060,15 @@ public class HashDB extends GhidraScript {
 			dataTypeManager.addDataType(hashStorage, DataTypeConflictHandler.REPLACE_HANDLER);
 		}
 
-		private DataType commitApiResultsToStruct(HashResolutionResultStore store, String name) {
+		private DataType commitApiResultsToStruct(HashResolutionResultStore store, String name, ArrayList<HashDB.HashLocation> hashLocations) {
+			List<HashDB.HashLocation> locationsCopy = new ArrayList<>(hashLocations);
+			locationsCopy.sort((a, b) -> a.getAddress().compareTo(b.getAddress()));
+
 			StructureDataType dst = (StructureDataType) getOutputType(name);
-			for (HashResolutionResult result : store.allResults()) {
+
+			for (HashDB.HashLocation hl : locationsCopy) {
+				HashResolutionResult result = store.getBeforeTransform(hl.getHashAsLong());
+
 				DataType entryDataType = null;
 				String apiName = null;
 				if (result.isResolved()) {
@@ -1094,14 +1101,14 @@ public class HashDB extends GhidraScript {
 			}
 		}
 
-		public void commitApiResults(String name, HashResolutionResultStore store) {
+		public void commitApiResults(String name, HashResolutionResultStore store, ArrayList<HashDB.HashLocation> hashLocations) {
 			DataType dst = null;
 			switch (strategy) {
 			case Enum:
 				dst = commitResultsToEnum(store.resolvedResults(), name);
 				break;
 			case Struct:
-				dst = commitApiResultsToStruct(store, name);
+				dst = commitApiResultsToStruct(store, name, hashLocations);
 				break;
 			}
 			commitDataType(dst);
@@ -1207,22 +1214,27 @@ public class HashDB extends GhidraScript {
 
 	private class HashResolutionResultStore {
 		private Map<Long, HashResolutionResult> store;
+		private Map<Long, HashResolutionResult> storeBeforeTransform;
 
 		HashResolutionResultStore() {
 			store = new LinkedHashMap<Long, HashResolutionResult>();
+			storeBeforeTransform = new LinkedHashMap<Long, HashResolutionResult>();
 		}
 
 		public void addNoMatch(long hashBeforeTransform, long hashAfterTransform) {
 			store.put(hashAfterTransform, new HashResolutionResult(hashBeforeTransform));
+			storeBeforeTransform.put(hashBeforeTransform, new HashResolutionResult(hashBeforeTransform));
 		}
 
 		public void addCollision(long hashBeforeTransform, long hashAfterTransform,
 				ArrayList<HashDBApi.HashInfo> hashInfos) {
 			store.put(hashAfterTransform, new HashResolutionResult(hashBeforeTransform, hashInfos));
+			storeBeforeTransform.put(hashBeforeTransform, new HashResolutionResult(hashBeforeTransform, hashInfos));
 		}
 
 		public void addResolution(long hashBeforeTransform, long hashAfterTransform, HashDBApi.HashInfo hashInfo) {
 			store.put(hashAfterTransform, new HashResolutionResult(hashBeforeTransform, hashInfo));
+			storeBeforeTransform.put(hashBeforeTransform, new HashResolutionResult(hashBeforeTransform, hashInfo));
 		}
 
 		public String getApiName(long hashAfterTransform) {
@@ -1235,6 +1247,10 @@ public class HashDB extends GhidraScript {
 
 		public HashResolutionResult get(Long hashAfterTransform) {
 			return store.get(hashAfterTransform);
+		}
+
+		public HashResolutionResult getBeforeTransform(Long hashBeforeTransform) {
+			return storeBeforeTransform.get(hashBeforeTransform);
 		}
 
 		public String prunePermutations() throws Exception {
@@ -1498,10 +1514,10 @@ public class HashDB extends GhidraScript {
 			handleCollisions(tm, hashLocations, hashesAfterTransform, resultStore);
 		}
 		tm.setMessage(String.format("updating data type \"%s\"", dialog.getStorageName()));
-		return processResult(resultStore);
+		return processResult(resultStore, hashLocations);
 	}
 
-	private String processResult(HashResolutionResultStore resultStore) throws Exception {
+	private String processResult(HashResolutionResultStore resultStore, ArrayList<HashDB.HashLocation> hashLocations) throws Exception {
 		DataTypeFactory dataTypeFactory = new DataTypeFactory(dialog.getOutputMethod());
 		String hashStorageName = dialog.getStorageName();
 		String nonApiEnumName = dialog.getNonApiEnumName();
@@ -1512,7 +1528,7 @@ public class HashDB extends GhidraScript {
 			sb.append(String.format("Added %d values to data type \"%s\". ", nonApiResolutions.size(), nonApiEnumName));
 		}
 		if (resultStore.resolvedCount() > 0) {
-			dataTypeFactory.commitApiResults(hashStorageName, resultStore);
+			dataTypeFactory.commitApiResults(hashStorageName, resultStore, hashLocations);
 			sb.append(String.format("Added %d values to data type \"%s\". ", resultStore.resolvedCount(),
 					hashStorageName));
 		}
